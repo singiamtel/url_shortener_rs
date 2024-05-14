@@ -2,12 +2,13 @@
 name = "url_shortener_rs"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
 
 [dependencies]
 axum = { version = "0.7.5", features = ["macros"] }
 chrono = { version = "0.4.38", features = ["serde"] }
 diesel = { version = "2.1.0", features = ["postgres", "r2d2", "chrono"] }
-dotenv = "0.15.0"
+dotenvy = "0.15.7"
 nanoid = "0.4.0"
 serde = { version = "1.0.201", features = ["derive"] }
 tokio = { version = "1.37.0", features = ["macros", "rt-multi-thread"] }

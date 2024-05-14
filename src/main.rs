@@ -15,7 +15,7 @@ use diesel::{
     PgConnection, QueryDsl, RunQueryDsl,
 };
 
-use dotenv::dotenv;
+use dotenvy::dotenv;
 use nanoid::nanoid;
 use std::env;
 
