@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+
+source ./.env
+
+if [ -z "$POSTGRES_USER" ]
+then
+  echo "POSTGRES_USER is not set"
+  exit 1
+fi
+
+if [ -z "$POSTGRES_PASSWORD" ]
+then
+  echo "POSTGRES_PASSWORD is not set"
+  exit 1
+fi
+
+
+docker run --rm --name url_shortener -e POSTGRES_PASSWORD=$POSTGRES_PASSWORD -e POSTGRES_USER=$POSTGRES_USER -p 5432:5432 postgres:12.1
