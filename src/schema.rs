@@ -3,7 +3,7 @@
 diesel::table! {
     url (id) {
         id -> Int4,
-        url -> Text,
+        name -> Text,
         short_url -> Text,
         created_at -> Nullable<Timestamp>,
         created_by -> Text,

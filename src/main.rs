@@ -1,19 +1,158 @@
+mod models;
+mod schema;
+
 use axum::{
-    routing::get,
+    extract::{Path, State},
+    response::{IntoResponse, Response},
+    routing::{get, post},
     Router,
+};
+use serde::{Deserialize, Serialize};
+
+use diesel::ExpressionMethods;
+use diesel::{
+    r2d2::{ConnectionManager, Pool},
+    PgConnection, QueryDsl, RunQueryDsl,
 };
 
 use dotenv::dotenv;
+use nanoid::nanoid;
 use std::env;
 
+type DbPool = Pool<ConnectionManager<PgConnection>>;
+
+#[derive(Clone)]
+struct AppState {
+    db: DbPool,
+}
+
+#[derive(Deserialize)]
+struct CreateRequest {
+    url: String,
+}
+
+#[derive(Serialize)]
+struct CreateSuccess {
+    url: String,
+}
+
+#[derive(Serialize)]
+struct CreateError {
+    message: String,
+}
+
+enum CreateResponse {
+    Success(CreateSuccess),
+    Error(CreateError),
+}
+
+impl IntoResponse for CreateResponse {
+    fn into_response(self) -> Response {
+        match self {
+            Self::Success(success) => {
+                let res = axum::Json(success).into_response();
+                (axum::http::StatusCode::CREATED, res).into_response()
+            }
+            Self::Error(error) => {
+                let res = axum::Json(error).into_response();
+                (axum::http::StatusCode::BAD_REQUEST, res).into_response()
+            }
+        }
+    }
+}
+
+async fn append_to_db(db: DbPool, url: String, short: String) -> Result<String, CreateError> {
+    use self::models::NewUrl;
+    use self::schema::url;
+
+    let mut conn = db.get().unwrap();
+
+    let awd = diesel::insert_into(url::table)
+        .values(&NewUrl {
+            name: &url,
+            short_url: &short,
+            created_by: "user",
+        })
+        .execute(&mut conn);
+
+    match awd {
+        Ok(_) => Ok(short),
+        Err(_) => Err(CreateError {
+            message: "Failed to create short url".to_string(),
+        }),
+    }
+}
+
+#[derive(Serialize)]
+struct FetchError {
+    message: String,
+}
+
+async fn get_url(db: DbPool, short: String) -> Result<String, FetchError> {
+    use schema::url::dsl::*;
+
+    let mut conn = db.get().unwrap();
+
+    let result = url
+        .filter(short_url.eq(short))
+        .first::<models::Url>(&mut conn);
+
+    match result {
+        Ok(res) => Ok(res.name),
+        Err(_) => Err(FetchError {
+            message: "Failed to get url".to_string(),
+        }),
+    }
+}
+
+async fn create_url(
+    State(app_state): State<AppState>,
+    req: axum::Json<CreateRequest>,
+) -> CreateResponse {
+    let result = append_to_db(app_state.db, req.url.clone(), nanoid!(6)).await;
+    match result {
+        Ok(shortened) => CreateResponse::Success(CreateSuccess { url: shortened }),
+        Err(e) => CreateResponse::Error(e),
+    }
+}
+
+async fn get_url_handler(
+    State(app_state): State<AppState>,
+    Path(short): Path<String>,
+) -> CreateResponse {
+    let result = get_url(app_state.db, short).await;
+    if let Ok(url) = result {
+        CreateResponse::Success(CreateSuccess { url })
+    } else {
+        CreateResponse::Error(CreateError {
+            message: "Failed to get url".to_string(),
+        })
+    }
+}
 
 #[tokio::main]
 async fn main() {
     dotenv().ok();
-    let port = env::var("PORT").unwrap_or("3000".to_string()).parse::<u16>().expect("PORT must be a number");
+    let port = env::var("PORT")
+        .unwrap_or_else(|_| "3000".to_string())
+        .parse::<u16>()
+        .expect("PORT must be a number");
 
-    let app = Router::new().route("/", get(|| async { "Hello, World!" }));
+    let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+    let app_state = AppState {
+        db: Pool::builder()
+            .build(ConnectionManager::<PgConnection>::new(database_url))
+            .expect("Failed to create pool"),
+    };
 
-    let listener = tokio::net::TcpListener::bind(format!(":::{}", port)).await.unwrap();
+    let app = Router::new()
+        .route("/", get(|| async { "Hello, World!" }))
+        .route("/create", post(create_url))
+        .route("/:short", get(get_url_handler))
+        .with_state(app_state);
+
+    let listener = tokio::net::TcpListener::bind(format!(":::{port}"))
+        .await
+        .unwrap();
     axum::serve(listener, app).await.unwrap();
 }
