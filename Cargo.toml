@@ -8,6 +8,7 @@ license = "MIT"
 axum = { version = "0.7.5", features = ["macros"] }
 chrono = { version = "0.4.38", features = ["serde"] }
 diesel = { version = "2.1.0", features = ["postgres", "r2d2", "chrono"] }
+diesel_migrations = "2.1.0"
 dotenvy = "0.15.7"
 nanoid = "0.4.0"
 serde = { version = "1.0.201", features = ["derive"] }

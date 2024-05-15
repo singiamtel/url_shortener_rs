@@ -14,6 +14,10 @@ use diesel::{
     r2d2::{ConnectionManager, Pool},
     PgConnection, QueryDsl, RunQueryDsl,
 };
+use diesel_migrations::{embed_migrations, EmbeddedMigrations, MigrationHarness};
+
+const MIGRATIONS: EmbeddedMigrations = embed_migrations!();
+type DB = diesel::pg::Pg;
 
 use dotenvy::dotenv;
 use nanoid::nanoid;
@@ -130,8 +134,31 @@ async fn get_url_handler(
     }
 }
 
+async fn cleanup_old_links(db: &DbPool, time: chrono::NaiveDateTime) -> Result<String, FetchError> {
+    use schema::url::dsl::*;
+
+    let mut conn = db.get().unwrap();
+
+    let result = diesel::delete(url.filter(created_at.lt(time))).execute(&mut conn);
+
+    match result {
+        Ok(_) => Ok("Deleted".to_string()),
+        Err(_) => Err(FetchError {
+            message: "Failed to delete url".to_string(),
+        }),
+    }
+}
+
+fn run_db_migration(conn: &mut impl MigrationHarness<DB>) {
+    conn.run_pending_migrations(MIGRATIONS)
+        .expect("Failed to run migrations");
+    println!("Migrations run successfully");
+}
+
+use std::error::Error;
+use std::time::Duration;
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), Box<dyn Error>> {
     dotenv().ok();
     let port = env::var("PORT")
         .unwrap_or_else(|_| "3000".to_string())
@@ -141,18 +168,36 @@ async fn main() {
     let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     let app_state = AppState {
         db: Pool::builder()
-            .build(ConnectionManager::<PgConnection>::new(database_url))
-            .expect("Failed to create pool"),
+            .connection_timeout(Duration::from_secs(3))
+            .build(ConnectionManager::<PgConnection>::new(database_url))?,
     };
+
+    let mut conn = app_state
+        .db
+        .get_timeout(Duration::from_secs(5))
+        .expect("Failed to get connection");
+    run_db_migration(&mut conn);
 
     let app = Router::new()
         .route("/", get(|| async { "Hello, World!" }))
         .route("/create", post(create_url))
         .route("/:short", get(get_url_handler))
-        .with_state(app_state);
+        .with_state(app_state.clone());
+
+    tokio::spawn(async move {
+        loop {
+            println!("Cleaning up old links");
+            match cleanup_old_links(&app_state.db, chrono::Utc::now().naive_utc()).await {
+                Ok(_) => (),
+                Err(e) => eprintln!("Error cleaning old links: {}", e.message),
+            }
+            tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+        }
+    });
 
     let listener = tokio::net::TcpListener::bind(format!(":::{port}"))
         .await
         .unwrap();
     axum::serve(listener, app).await.unwrap();
+    Ok(())
 }
