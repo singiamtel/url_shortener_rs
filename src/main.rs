@@ -3,7 +3,7 @@ mod schema;
 
 use axum::{
     extract::{Path, State},
-    response::{IntoResponse, Response},
+    response::{IntoResponse, Redirect, Response},
     routing::{get, post},
     Router,
 };
@@ -93,7 +93,7 @@ struct FetchError {
 }
 
 async fn get_url(db: DbPool, short: String) -> Result<String, FetchError> {
-    use schema::url::dsl::*;
+    use schema::url::dsl::{short_url, url};
 
     let mut conn = db.get().unwrap();
 
@@ -120,27 +120,44 @@ async fn create_url(
     }
 }
 
-async fn get_url_handler(
-    State(app_state): State<AppState>,
-    Path(short): Path<String>,
-) -> CreateResponse {
-    let result = get_url(app_state.db, short).await;
-    if let Ok(url) = result {
-        CreateResponse::Success(CreateSuccess { url })
-    } else {
-        CreateResponse::Error(CreateError {
-            message: "Failed to get url".to_string(),
-        })
+#[derive(Serialize)]
+struct RedirSuccess {
+    url: String,
+}
+
+enum RedirResponse {
+    Success(RedirSuccess),
+    Error(FetchError),
+}
+
+impl IntoResponse for RedirResponse {
+    fn into_response(self) -> Response {
+        match self {
+            Self::Success(success) => Redirect::to(&success.url).into_response(),
+            Self::Error(error) => {
+                let res = axum::Json(error).into_response();
+                (axum::http::StatusCode::BAD_REQUEST, res).into_response()
+            }
+        }
     }
 }
 
-async fn cleanup_old_links(db: &DbPool, time: chrono::NaiveDateTime) -> Result<String, FetchError> {
-    use schema::url::dsl::*;
+async fn get_url_handler(
+    State(app_state): State<AppState>,
+    Path(short): Path<String>,
+) -> RedirResponse {
+    let result = get_url(app_state.db, short).await;
+    match result {
+        Ok(url) => RedirResponse::Success(RedirSuccess { url }),
+        Err(e) => RedirResponse::Error(e),
+    }
+}
 
+fn cleanup_old_links(db: &DbPool, margin: chrono::Duration) -> Result<String, FetchError> {
+    use schema::url::dsl::{created_at, url};
     let mut conn = db.get().unwrap();
-
-    let result = diesel::delete(url.filter(created_at.lt(time))).execute(&mut conn);
-
+    let threshold = chrono::Utc::now().naive_utc() - margin;
+    let result = diesel::delete(url.filter(created_at.lt(threshold))).execute(&mut conn);
     match result {
         Ok(_) => Ok("Deleted".to_string()),
         Err(_) => Err(FetchError {
@@ -187,7 +204,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     tokio::spawn(async move {
         loop {
             println!("Cleaning up old links");
-            match cleanup_old_links(&app_state.db, chrono::Utc::now().naive_utc()).await {
+            match cleanup_old_links(&app_state.db, chrono::Duration::days(30)) {
                 Ok(_) => (),
                 Err(e) => eprintln!("Error cleaning old links: {}", e.message),
             }
