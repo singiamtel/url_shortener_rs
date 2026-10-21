@@ -26,7 +26,14 @@
   outputs = { self, nixpkgs, crane, fenix, flake-utils, advisory-db, ... }:
     flake-utils.lib.eachDefaultSystem (system:
       let
-        pkgs = nixpkgs.legacyPackages.${system};
+        pkgs = import nixpkgs {
+          inherit system;
+          overlays = [ (final: prev: {
+            cacert = prev.cacert.override {
+              blacklist = [ "Comodo AAA Services root" "emSign ECC Root CA - G3" ];
+            };
+          }) ];
+        };
 
         inherit (pkgs) lib;
 
@@ -124,6 +131,8 @@
         };
 
         devShells.default = craneLib.devShell {
+          SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+          NIX_SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
           # Inherit inputs from checks.
           checks = self.checks.${system};
 
